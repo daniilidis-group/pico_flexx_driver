@@ -35,6 +35,7 @@
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/PointCloud2.h>
+#include <yaml-cpp/yaml.h>
 
 #include <royale.hpp>
 
@@ -134,10 +135,13 @@ private:
   std::string baseNameTF;
   std::chrono::high_resolution_clock::time_point startTime;
   std::thread threadProcess;
+  bool overrideCameraInfo;
+  std::string cameraInfoPath;
+  sensor_msgs::CameraInfo::Ptr externalCameraInfo;  
 
 public:
   PicoFlexx(const ros::NodeHandle &nh = ros::NodeHandle(), const ros::NodeHandle &priv_nh = ros::NodeHandle("~"))
-    : royale::IDepthDataListener(), royale::IExposureListener2(), nh(nh), priv_nh(priv_nh), server(lockServer, priv_nh)
+    : royale::IDepthDataListener(), royale::IExposureListener2(), nh(nh), priv_nh(priv_nh), server(lockServer)
   {
     cbExposureTime.resize(2);
     running = false;
@@ -159,7 +163,8 @@ public:
     config.exposure_time = 1000;
     config.exposure_mode_stream2 = 0;
     config.exposure_time_stream2 = 1000;
-    config.max_noise = 0.07;
+    config.max_abs_noise = 0.5;
+    config.max_rel_noise = 0.03;
     config.range_factor = 2.0;
 
     configMin.use_case = 0;
@@ -167,7 +172,8 @@ public:
     configMin.exposure_time = 50;
     configMin.exposure_mode_stream2 = 0;
     configMin.exposure_time_stream2 = 50;
-    configMin.max_noise = 0.0;
+    configMin.max_abs_noise = 0.0;
+    configMin.max_rel_noise = 0.001;
     configMin.range_factor = 0.0;
 
     configMax.use_case = 5;
@@ -175,7 +181,8 @@ public:
     configMax.exposure_time = 2000;
     configMax.exposure_mode_stream2 = 1;
     configMax.exposure_time_stream2 = 2000;
-    configMax.max_noise = 0.10;
+    configMax.max_abs_noise = 1.0;
+    configMax.max_rel_noise = 10;
     configMax.range_factor = 7.0;
   }
 
@@ -426,13 +433,21 @@ public:
 
     if(level & 0x20)
     {
-      OUT_INFO("reconfigured max_noise: " << FG_CYAN << config.max_noise << " meters" << NO_COLOR);
+      OUT_INFO("reconfigured max_abs_noise: " << FG_CYAN << config.max_abs_noise << " meters" << NO_COLOR);
       lockStatus.lock();
-      this->config.max_noise = config.max_noise;
+      this->config.max_abs_noise = config.max_abs_noise;
       lockStatus.unlock();
     }
 
     if(level & 0x40)
+    {
+      OUT_INFO("reconfigured max_rel_noise: " << FG_CYAN << config.max_rel_noise  << NO_COLOR);
+      lockStatus.lock();
+      this->config.max_rel_noise = config.max_rel_noise;
+      lockStatus.unlock();
+    }
+
+    if(level & 0x80)
     {
       OUT_INFO("reconfigured range_factor: " << FG_CYAN << config.range_factor << " meters" << NO_COLOR);
       lockStatus.lock();
@@ -466,6 +481,37 @@ public:
 
 private:
 
+  void load_info_from_yaml(const std::string& fname, sensor_msgs::CameraInfo::Ptr& info)
+  {
+    YAML::Node config = YAML::LoadFile(fname);
+
+    // start read left camera configure! 
+    info->width = config["image_width"].as<int>();
+    info->height = config["image_height"].as<int>();
+    info->distortion_model = config["distortion_model"].as<std::string>();
+    if (info->distortion_model == "radtan") {
+      info->distortion_model = "plumb_bob";
+    }
+    // get value
+    std::vector<double> dd,kk,rr,pp,buf;
+    dd = config["distortion_coefficients"]["data"].as<std::vector<double>>();
+    kk = config["camera_matrix"]["data"].as<std::vector<double>>();
+    rr = config["rectification_matrix"]["data"].as<std::vector<double>>();
+    pp = config["projection_matrix"]["data"].as<std::vector<double>>();
+    // data type conversion
+    boost::array<double, 9ul> kl;
+    std::memcpy(&kl[0], &kk[0], sizeof(double)*9);
+    boost::array<double, 9ul> rl;
+    std::memcpy(&rl[0], &rr[0], sizeof(double)*9);
+    boost::array<double, 12ul> pl;
+    std::memcpy(&pl[0], &pp[0], sizeof(double)*12);
+    // put value
+    info->D =  dd; 
+    info->K =  kl; 
+    info->R =  rl; 
+    info->P =  pl;
+  }
+  
   bool initialize()
   {
     if(running)
@@ -477,7 +523,7 @@ private:
     bool automaticExposure, automaticExposureStream2;
     int32_t useCase, exposureTime, exposureTimeStream2, queueSize;
     std::string sensor, baseName;
-    double maxNoise, rangeFactor;
+    double maxAbsNoise, maxRelNoise, rangeFactor;
 
     priv_nh.param("base_name", baseName, std::string(PF_DEFAULT_NS));
     priv_nh.param("sensor", sensor, std::string(""));
@@ -486,10 +532,19 @@ private:
     priv_nh.param("automatic_exposure", automaticExposureStream2, true);
     priv_nh.param("exposure_time", exposureTime, 1000);
     priv_nh.param("exposure_time_stream2", exposureTimeStream2, 1000);
-    priv_nh.param("max_noise", maxNoise, 0.7);
+    priv_nh.param("max_abs_noise", maxAbsNoise, 0.5);
+    priv_nh.param("max_rel_noise", maxRelNoise, 0.03);
     priv_nh.param("range_factor", rangeFactor, 2.0);
     priv_nh.param("queue_size", queueSize, 2);
     priv_nh.param("base_name_tf", baseNameTF, baseName);
+    priv_nh.param("override_camera_info", overrideCameraInfo, false);
+    priv_nh.param("camera_info_path", cameraInfoPath, std::string(""));
+
+    if (overrideCameraInfo) {
+      externalCameraInfo.reset(new sensor_msgs::CameraInfo);
+      // load the camera info
+      load_info_from_yaml(cameraInfoPath, externalCameraInfo);
+    }
 
     OUT_INFO("parameter:" << std::endl
              << "                 base_name: " FG_CYAN << baseName << NO_COLOR << std::endl
@@ -499,7 +554,8 @@ private:
              << "automatic_exposure_stream2: " FG_CYAN << (automaticExposureStream2 ? "true" : "false") << NO_COLOR << std::endl
              << "             exposure_time: " FG_CYAN << exposureTime << NO_COLOR << std::endl
              << "     exposure_time_stream2: " FG_CYAN << exposureTimeStream2 << NO_COLOR << std::endl
-             << "                 max_noise: " FG_CYAN << maxNoise << " meters" NO_COLOR << std::endl
+             << "             max_abs_noise: " FG_CYAN << maxAbsNoise << " meters" NO_COLOR << std::endl
+             << "             max_rel_noise: " FG_CYAN << maxRelNoise << NO_COLOR << std::endl
              << "              range_factor: " FG_CYAN << rangeFactor << NO_COLOR << std::endl
              << "                queue_size: " FG_CYAN << queueSize << NO_COLOR << std::endl
              << "              base_name_tf: " FG_CYAN << baseNameTF << NO_COLOR);
@@ -548,7 +604,8 @@ private:
     config.exposure_mode_stream2 = automaticExposureStream2 ? 1 : 0;
     config.exposure_time = std::max(std::min(exposureTime, configMax.exposure_time), configMin.exposure_time);
     config.exposure_time_stream2 = std::max(std::min(exposureTimeStream2, configMax.exposure_time_stream2), configMin.exposure_time_stream2);
-    config.max_noise = std::max(std::min(maxNoise, configMax.max_noise), configMin.max_noise);
+    config.max_abs_noise = std::max(std::min(maxAbsNoise, configMax.max_abs_noise), configMin.max_abs_noise);
+    config.max_rel_noise = std::max(std::min(maxRelNoise, configMax.max_rel_noise), configMin.max_rel_noise);
     config.range_factor = std::max(std::min(rangeFactor, configMax.range_factor), configMin.range_factor);
 
     server.setConfigDefault(config);
@@ -946,8 +1003,10 @@ private:
       size_t streamIndex;
       if (findStreamIndex(data->streamId, streamIndex))
       {
-        extractData(*data, msgCameraInfo, msgCloud, msgMono8, msgMono16, msgDepth, msgNoise, streamIndex);
-        publish(msgCameraInfo, msgCloud, msgMono8, msgMono16, msgDepth, msgNoise, streamIndex);
+        extractData(*data, msgCameraInfo, msgCloud, msgMono8, msgMono16, msgDepth, msgNoise,
+                    streamIndex);
+        publish(msgCameraInfo, msgCloud, msgMono8, msgMono16, msgDepth, msgNoise,
+                streamIndex);
       }
       lockStatus.unlock();
 
@@ -977,8 +1036,8 @@ private:
   }
 
   void extractData(const royale::DepthData &data, sensor_msgs::CameraInfoPtr &msgCameraInfo, sensor_msgs::PointCloud2Ptr &msgCloud,
-                   sensor_msgs::ImagePtr &msgMono8, sensor_msgs::ImagePtr &msgMono16, sensor_msgs::ImagePtr &msgDepth, sensor_msgs::ImagePtr &msgNoise,
-                   size_t streamIndex = 0) const
+                   sensor_msgs::ImagePtr &msgMono8, sensor_msgs::ImagePtr &msgMono16, sensor_msgs::ImagePtr &msgDepth,
+                   sensor_msgs::ImagePtr &msgNoise, size_t streamIndex = 0) const
   {
     std_msgs::Header header;
     header.frame_id = baseNameTF + PF_TF_OPT_FRAME;
@@ -993,7 +1052,8 @@ private:
       msgCameraInfo->width = data.width;
     }
 
-    if(!(status[streamIndex][MONO_8] || status[streamIndex][MONO_16] || status[streamIndex][DEPTH] || status[streamIndex][NOISE] || status[streamIndex][CLOUD]))
+    if(!(status[streamIndex][MONO_8] || status[streamIndex][MONO_16] || status[streamIndex][DEPTH] ||
+         status[streamIndex][NOISE] || status[streamIndex][CLOUD]))
     {
       return;
     }
@@ -1057,11 +1117,13 @@ private:
     msgCloud->data.resize(msgCloud->point_step * data.points.size());
 
     const float invalid = std::numeric_limits<float>::quiet_NaN();
-    const float maxNoise = (float)config.max_noise;
+    const float maxAbsNoise = (float)config.max_abs_noise;
+    const float maxRelNoise = (float)config.max_rel_noise;
     const royale::DepthPoint *itI = &data.points[0];
     float *itD = (float *)&msgDepth->data[0];
     float *itN = (float *)&msgNoise->data[0];
     uint16_t *itM = (uint16_t *)&msgMono16->data[0];
+    int ndropped(0);
     for(size_t i = 0; i < data.points.size(); ++i, ++itI, ++itD, ++itM, ++itN)
     {
       float *itCX = (float *)&msgCloud->data[i * msgCloud->point_step];
@@ -1070,7 +1132,7 @@ private:
       float *itCN = itCZ + 1;                    // "noise" field
       uint16_t *itCM = (uint16_t *)(itCN + 1);   // "intensity" field
 
-      if(itI->depthConfidence && itI->noise < maxNoise)
+      if(itI->depthConfidence && itI->noise < maxAbsNoise && (itI->noise < itI->z * maxRelNoise))
       {
         *itCX = itI->x;
         *itCY = itI->y;
@@ -1087,11 +1149,13 @@ private:
         *itCN = 0.0f;
         *itD = 0.0f;
         *itN = 0.0f;
+        ndropped++;
       }
       *itCM = itI->grayValue;
       *itM = itI->grayValue;
     }
-
+    int percentFiltered(data.points.size() == 0 ? 0: (100 * ndropped) / data.points.size());
+    ROS_INFO_STREAM_THROTTLE(10, "[pico_flexx_driver]: filtered " << percentFiltered << "% of points");
     computeMono8(msgMono16, msgMono8, msgCloud);
   }
 
@@ -1170,6 +1234,9 @@ private:
   {
     if(status[streamIndex][CAMERA_INFO])
     {
+      if (overrideCameraInfo) {
+        msgCameraInfo = externalCameraInfo;
+      }
       publisher[streamIndex][CAMERA_INFO].publish(msgCameraInfo);
       msgCameraInfo = sensor_msgs::CameraInfoPtr(new sensor_msgs::CameraInfo);
     }
