@@ -1,0 +1,75 @@
+<launch>
+  <arg name="robot"              default="$(optenv FLA_ROBOT fla)"/>
+  <!-- Name of the node. All topics will be advertised under this name. -->
+  <arg name="base_name"          default="monstar"/>
+  <!-- ID of the sensor that should be used. IDs of all connected
+       devices are listed on startup. Leave empty to pick only one -->
+  <arg name="sensor"             default=""/>
+  <!--
+  <arg name="sensor"             default="0006-2508-0043-1615"/>
+  <arg name="sensor"             default="0006-2508-0043-2016"/>
+  -->
+  <!-- ID of the use case. A list of supported use cases is listed on startup. -->
+  <arg name="use_case"           default="0"/>
+  <!-- Enable or disable automatic expusure. -->
+  <arg name="automatic_exposure" default="true"/>
+  <!-- Exposure time. Only for manual exposure. -->
+  <arg name="exposure_time"      default="1000"/>
+  <!-- Maximum allowed noise [in meters]. Data with higher noise will be filtered out. -->
+  <arg name="max_abs_noise"      default="0.02"/>
+  <!-- Maximum allowed relative distance noise, i.e. 0.03 means 3% depth noise. -->
+  <arg name="max_rel_noise"      default="0.03"/>
+  <!-- Range of the 16-Bit mono image which should be mapped to the 0-255 range of the 8-Bit mono image. The resulting range is `range_factor` times the standard deviation arround mean. -->
+  <arg name="range_factor"       default="2.0"/>
+  <!-- Queue size for publisher. -->
+  <arg name="queue_size"         default="5"/>
+  <!-- Base name of the tf frames. -->
+  <arg name="base_name_tf"       default="$(arg robot)/$(arg base_name)"/>
+  <!-- Machine on with the nodes should run. -->
+  <arg name="machine"            default="localhost"/>
+  <!-- Whether the machine for localhost should be defined our not. Disable this if the launch file is included somewhere where machines are already defined. -->
+  <arg name="define_machine"     default="true"/>
+  <!-- Name of the nodelet manager. -->
+  <arg name="nodelet_manager"    default="$(arg base_name)"/>
+  <!-- Whether to start a nodelet manager our not. Disable this if a different nodelet manager should be used. -->
+  <arg name="start_manager"      default="true"/>
+  <!-- Whether to run the image_proc node -->
+  <arg name="run_image_proc"     default="true"/>
+  <arg name="override_camera_info" default="false"/>
+  <arg name="camera_info_path" default=""/>
+
+  <!-- Default machine definition. -->
+  <machine name="localhost" address="localhost" if="$(arg define_machine)"/>
+
+
+  <!-- pico_flexx_driver nodelet. -->
+  <group ns="$(arg robot)">
+    <!-- Nodelet manager. -->
+    <node pkg="nodelet" type="nodelet" name="$(arg nodelet_manager)" args="manager"
+          if="$(arg start_manager)" machine="$(arg machine)" output="screen"/>
+    <node pkg="nodelet" type="nodelet" name="$(arg base_name)_driver" machine="$(arg machine)"
+          args="load pico_flexx_driver/pico_flexx_nodelet $(arg nodelet_manager)"
+          respawn="true" output="screen">
+      <param name="base_name"          type="str"    value="$(arg base_name)"/>
+      <param name="sensor"             type="str"    value="$(arg sensor)"/>
+      <param name="use_case"           type="int"    value="$(arg use_case)"/>
+      <param name="automatic_exposure" type="bool"   value="$(arg automatic_exposure)"/>
+      <param name="exposure_time"      type="int"    value="$(arg exposure_time)"/>
+      <param name="max_abs_noise"      type="double" value="$(arg max_abs_noise)"/>
+      <param name="max_rel_noise"      type="double" value="$(arg max_rel_noise)"/>
+      <param name="range_factor"       type="double" value="$(arg range_factor)"/>
+      <param name="queue_size"         type="int"    value="$(arg queue_size)"/>
+      <param name="base_name_tf"       type="str"    value="$(arg base_name_tf)"/>
+      <param name="override_camera_info" value="$(arg override_camera_info)"/>
+      <param name="camera_info_path"     value="$(arg camera_info_path)"/>
+    </node>
+    <node pkg="nodelet" type="nodelet" name="$(arg base_name)_image_proc" output="screen"
+          args="load image_proc/rectify $(arg nodelet_manager)"
+          if="$(arg run_image_proc)">
+      <remap from="image_mono" to="$(arg base_name)/image_mono8"/>
+      <remap from="camera_info" to="$(arg base_name)/camera_info"/>
+      <remap from="image_rect" to="$(arg base_name)/image_rect_mono"/>
+    </node>
+  </group>
+
+</launch>

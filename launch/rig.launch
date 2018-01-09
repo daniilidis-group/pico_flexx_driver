@@ -1,0 +1,8 @@
+<launch>
+  <arg name="robot" default="$(env FLA_ROBOT_NAME)"/>
+
+  <group ns="$(arg robot)">
+    <include file="$(find pico_flexx_driver)/launch/pico.launch"/>
+    <include file="$(find pico_flexx_driver)/launch/monstar.launch"/>
+  </group>
+</launch>

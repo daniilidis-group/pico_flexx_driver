@@ -1,0 +1,9 @@
+<launch>
+  <arg name="robot" default="$(env FLA_ROBOT_NAME)"/>
+
+  <group ns="$(arg robot)">
+    <include file="$(find fla_drivers_launch)/launch/falcam.launch">
+      <arg name="frame_rate" default="20"/>
+    </include>
+  </group>
+</launch>
