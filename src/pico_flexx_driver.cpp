@@ -1236,6 +1236,8 @@ private:
     {
       if (overrideCameraInfo) {
         msgCameraInfo = externalCameraInfo;
+        msgCameraInfo->header.stamp = msgMono8->header.stamp;
+        msgCameraInfo->header.frame_id = msgMono8->header.frame_id;
       }
       publisher[streamIndex][CAMERA_INFO].publish(msgCameraInfo);
       msgCameraInfo = sensor_msgs::CameraInfoPtr(new sensor_msgs::CameraInfo);
