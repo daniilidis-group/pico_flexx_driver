@@ -778,6 +778,25 @@ private:
       OUT_ERROR("could not get lens parameter!");
       ret = false;
     }
+
+    royale::Vector<uint8_t> calib_data;
+    royale::CameraStatus r = cameraDevice->getCalibrationData(calib_data);
+    OUT_INFO("Getting Calibration data: " << royale::getStatusString(r));
+    if (r == royale::CameraStatus::SUCCESS) {
+      OUT_INFO("Got calibration data...");
+      int lines = calib_data.size()/4;
+      if (calib_data.size() % 4 != 0) {
+        lines += 1;
+      }
+      OUT_INFO("Calibration size: " << calib_data.size() << ", lines: " << lines);
+      for (int i = 0; i < lines; ++i) {
+        for (int j = 0; j < 4; j++) {
+          fprintf(stdout,"%c ", calib_data.data()[i*4+j]);
+        }
+        fprintf(stdout,"[%f]\n", *((float*)(&calib_data.data()[i*4])));
+      }
+    }
+    
     return ret;
   }
 
