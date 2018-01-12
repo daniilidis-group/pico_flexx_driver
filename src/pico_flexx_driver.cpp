@@ -35,6 +35,7 @@
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/PointCloud2.h>
+#include <image_geometry/pinhole_camera_model.h>
 #include <yaml-cpp/yaml.h>
 
 #include <royale.hpp>
@@ -101,6 +102,21 @@
 
 #endif
 
+void computeUndistortMap(const sensor_msgs::CameraInfo::ConstPtr& camInfo,
+                         const image_geometry::PinholeCameraModel& cameraModel_,
+                         std::vector<cv::Point3d>& undistortedPoints_)
+{
+  undistortedPoints_.resize(camInfo->height * camInfo->width);
+  for (int v = 0; v < camInfo->height; v++) {
+    for (int u = 0; u < camInfo->width; u++) {
+      cv::Point2d uv_rect = cameraModel_.rectifyPoint(cv::Point2d(u,v));
+      undistortedPoints_[v * camInfo->width + u] = cameraModel_.projectPixelTo3dRay(uv_rect);
+    }
+  }  
+}
+
+
+
 class PicoFlexx : public royale::IDepthDataListener, public royale::IExposureListener2
 {
 private:
@@ -138,6 +154,8 @@ private:
   bool overrideCameraInfo;
   std::string cameraInfoPath;
   sensor_msgs::CameraInfo::Ptr externalCameraInfo;  
+  std::vector<cv::Point3d> undistortedPoints_;
+  image_geometry::PinholeCameraModel cameraModel_;
 
 public:
   PicoFlexx(const ros::NodeHandle &nh = ros::NodeHandle(), const ros::NodeHandle &priv_nh = ros::NodeHandle("~"))
@@ -544,6 +562,22 @@ private:
       externalCameraInfo.reset(new sensor_msgs::CameraInfo);
       // load the camera info
       load_info_from_yaml(cameraInfoPath, externalCameraInfo);
+      cameraModel_.fromCameraInfo(externalCameraInfo);
+      OUT_INFO(FG_RED <<   "Overriding onboard camera info using external parameters:" << std::endl <<
+               NO_COLOR << "             File: " << FG_CYAN << cameraInfoPath << std::endl <<
+               NO_COLOR << "               fx: " << FG_CYAN << externalCameraInfo->K[0] << std::endl <<
+               NO_COLOR << "               fy: " << FG_CYAN << externalCameraInfo->K[4] << std::endl <<
+               NO_COLOR << "               cx: " << FG_CYAN << externalCameraInfo->K[2] << std::endl <<
+               NO_COLOR << "               cy: " << FG_CYAN << externalCameraInfo->K[5] << std::endl <<
+               NO_COLOR << "             dist: " << FG_CYAN <<
+               externalCameraInfo->D[0] << ", " <<
+               externalCameraInfo->D[1] << ", " <<
+               externalCameraInfo->D[2] << ", " <<
+               externalCameraInfo->D[3] << ", " <<
+               externalCameraInfo->D[4] << std::endl <<
+               NO_COLOR << "  Computing cloud: " << FG_CYAN << "true" << NO_COLOR << std::endl);
+      // pre-process the cloud undistortion map
+      computeUndistortMap(externalCameraInfo, cameraModel_, undistortedPoints_);
     }
 
     OUT_INFO("parameter:" << std::endl
@@ -1101,7 +1135,32 @@ private:
     msgNoise->step = (uint32_t)(sizeof(float) * data.width);
     msgNoise->data.resize(sizeof(float) * data.points.size());
 
-    msgCloud->header = header;
+    if (overrideCameraInfo) {
+      auto func = [&](size_t i, const royale::DepthPoint* itI, float* itD, cv::Point3d& p) {
+        p = undistortedPoints_[i] * (*itD);
+      };
+      computeCloud(data, msgCloud, func, msgMono16, msgDepth, msgNoise);
+    } else {
+      auto func = [](size_t i, const royale::DepthPoint* itI, float* itD, cv::Point3d& p) {
+        p.x = itI->x;
+        p.y = itI->y;
+        p.z = itI->z;
+      };
+      computeCloud(data, msgCloud, func, msgMono16, msgDepth, msgNoise);
+    }
+    computeMono8(msgMono16, msgMono8, msgCloud);
+  }
+
+  template<typename PtFunc>
+  void computeCloud(const royale::DepthData& data,
+                    sensor_msgs::PointCloud2Ptr& msgCloud,
+                    PtFunc compute_point, 
+                    sensor_msgs::ImagePtr &msgMono16,
+                    sensor_msgs::ImagePtr &msgDepth,
+                    sensor_msgs::ImagePtr &msgNoise) const
+  {
+    // create cloud message for built-in cloud
+    msgCloud->header = msgDepth->header;
     msgCloud->height = data.height;
     msgCloud->width = data.width;
     msgCloud->is_bigendian = false;
@@ -1142,26 +1201,24 @@ private:
     float *itD = (float *)&msgDepth->data[0];
     float *itN = (float *)&msgNoise->data[0];
     uint16_t *itM = (uint16_t *)&msgMono16->data[0];
+    cv::Point3d pt;
     int ndropped(0);
-    for(size_t i = 0; i < data.points.size(); ++i, ++itI, ++itD, ++itM, ++itN)
-    {
+    for(size_t i = 0; i < data.points.size(); ++i, ++itI, ++itD, ++itM, ++itN) {
       float *itCX = (float *)&msgCloud->data[i * msgCloud->point_step];
       float *itCY = itCX + 1;
       float *itCZ = itCY + 1;
       float *itCN = itCZ + 1;                    // "noise" field
       uint16_t *itCM = (uint16_t *)(itCN + 1);   // "intensity" field
-
-      if(itI->depthConfidence && itI->noise < maxAbsNoise && (itI->noise < itI->z * maxRelNoise))
-      {
-        *itCX = itI->x;
-        *itCY = itI->y;
-        *itCZ = itI->z;
+      
+      if (itI->depthConfidence && itI->noise < maxAbsNoise && (itI->noise < itI->z * maxRelNoise)) {
+        compute_point(i, itI, itD, pt);
+        *itCX = pt.x;
+        *itCY = pt.y;
+        *itCZ = pt.z;
         *itCN = itI->noise;
         *itD = itI->z;
         *itN = itI->noise;
-      }
-      else
-      {
+      } else {
         *itCX = invalid;
         *itCY = invalid;
         *itCZ = invalid;
@@ -1175,9 +1232,8 @@ private:
     }
     int percentFiltered(data.points.size() == 0 ? 0: (100 * ndropped) / data.points.size());
     ROS_INFO_STREAM_THROTTLE(10, "[pico_flexx_driver]: filtered " << percentFiltered << "% of points");
-    computeMono8(msgMono16, msgMono8, msgCloud);
   }
-
+                      
   void computeMono8(const sensor_msgs::ImageConstPtr &msgMono16, sensor_msgs::ImagePtr &msgMono8, sensor_msgs::PointCloud2Ptr &msgCloud) const
   {
     msgMono8->header = msgMono16->header;

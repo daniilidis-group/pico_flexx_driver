@@ -35,6 +35,7 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   rostime
   sensor_msgs
+  image_geometry
   std_msgs
   dynamic_reconfigure
 )
