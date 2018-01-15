@@ -1136,12 +1136,12 @@ private:
     msgNoise->data.resize(sizeof(float) * data.points.size());
 
     if (overrideCameraInfo) {
-      auto func = [&](size_t i, const royale::DepthPoint* itI, float* itD, cv::Point3d& p) {
-        p = undistortedPoints_[i] * (*itD);
+      auto func = [&](size_t i, const royale::DepthPoint* itI, float itD, cv::Point3d& p) {
+        p = undistortedPoints_[i] * itD;
       };
       computeCloud(data, msgCloud, func, msgMono16, msgDepth, msgNoise);
     } else {
-      auto func = [](size_t i, const royale::DepthPoint* itI, float* itD, cv::Point3d& p) {
+      auto func = [](size_t i, const royale::DepthPoint* itI, float itD, cv::Point3d& p) {
         p.x = itI->x;
         p.y = itI->y;
         p.z = itI->z;
@@ -1208,10 +1208,10 @@ private:
       float *itCY = itCX + 1;
       float *itCZ = itCY + 1;
       float *itCN = itCZ + 1;                    // "noise" field
-      uint16_t *itCM = (uint16_t *)(itCN + 1);   // "intensity" field
-      
+      uint16_t *itCM = (uint16_t *)(itCN + 1);   // "intensity" field      
+
       if (itI->depthConfidence && itI->noise < maxAbsNoise && (itI->noise < itI->z * maxRelNoise)) {
-        compute_point(i, itI, itD, pt);
+        compute_point(i, itI, itI->z, pt);
         *itCX = pt.x;
         *itCY = pt.y;
         *itCZ = pt.z;

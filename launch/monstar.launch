@@ -61,9 +61,7 @@
       <param name="queue_size"         type="int"    value="$(arg queue_size)"/>
       <param name="base_name_tf"       type="str"    value="$(arg base_name_tf)"/>
       <param name="override_camera_info" value="$(arg override_camera_info)"/>
-      <param name="camera_info_path"     value="$(arg
-						camera_info_path)"/>
-      <remap from="monstar/points" to="monstar/points_bad"/>
+      <param name="camera_info_path"     value="$(arg camera_info_path)"/>
     </node>
     <node pkg="nodelet" type="nodelet" name="$(arg base_name)_image_proc" output="screen"
           args="load image_proc/rectify $(arg nodelet_manager)"
