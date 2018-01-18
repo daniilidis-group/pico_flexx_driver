@@ -12,7 +12,7 @@ INCLUDE(CheckCXXCompilerFlag)
 CHECK_CXX_COMPILER_FLAG("-std=c++11" COMPILER_SUPPORTS_CXX11)
 CHECK_CXX_COMPILER_FLAG("-std=c++0x" COMPILER_SUPPORTS_CXX0X)
 IF(COMPILER_SUPPORTS_CXX11)
-SET(additional_cxx_flags "${additional_cxx_flags} -std=c++11")
+SET(additional_cxx_flags "${additional_cxx_flags} -std=c++11 -Wno-logical-op")
 ELSEIF(COMPILER_SUPPORTS_CXX0X)
 SET(additional_cxx_flags "${additional_cxx_flags} -std=c++0x")
 ELSE()
@@ -38,10 +38,17 @@ find_package(catkin REQUIRED COMPONENTS
   image_geometry
   std_msgs
   dynamic_reconfigure
+  tf2_ros
+  tf2_eigen
+  cv_bridge
 )
 
 ## System dependencies are found with CMake's conventions
 find_package(royale REQUIRED)
+find_package(Eigen3 REQUIRED)
+find_package(OpenCV 3 REQUIRED)
+include_directories(${EIGEN3_INCLUDE_DIR})
+include_directories(${OpenCV_INCLUDE_DIRS})
 
 # combine cmake_cxx_flags and additional_cxx_flags
 # plus change the space-separated string, into a list delimited by semicolons
@@ -93,16 +100,28 @@ include_directories(
   ${royale_INCLUDE_DIRS}
 )
 
+
+
 link_directories(${royale_LIB_DIR})
 set(CMAKE_INSTALL_RPATH ${royale_LIB_DIR})
 
-add_library(pico_flexx_nodelet SHARED src/pico_flexx_driver.cpp)
+add_library(pico_flexx_nodelet SHARED
+  src/pico_flexx_driver.cpp)
 target_link_libraries(pico_flexx_nodelet
   ${catkin_LIBRARIES}
-  ${royale_LIBRARIES} yaml-cpp
-)
+  ${royale_LIBRARIES} yaml-cpp)
 add_dependencies(pico_flexx_nodelet ${PROJECT_NAME}_gencfg)
 target_compile_options(pico_flexx_nodelet PUBLIC ${cxx_flags})
+
+add_library(color_cloud_nodelet SHARED
+  src/color_cloud_nodelet.cpp)
+target_link_libraries(color_cloud_nodelet
+  ${catkin_LIBRARIES}
+  ${royale_LIBRARIES}
+  ${OpenCV_LIBRARIES} yaml-cpp)
+add_dependencies(color_cloud_nodelet ${PROJECT_NAME}_gencfg)
+target_compile_options(color_cloud_nodelet PUBLIC ${cxx_flags})
+
 
 add_executable(pico_flexx_driver src/pico_flexx_driver.cpp)
 target_link_libraries(pico_flexx_driver
