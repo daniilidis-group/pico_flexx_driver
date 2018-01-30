@@ -280,9 +280,13 @@ public:
     // lookup the transform
     geometry_msgs::TransformStamped tf;
     try {
-      tf = tfBuffer.lookupTransform(cloud->header.frame_id,
-                                    color->header.frame_id,
-                                    cloud->header.stamp);      
+      tf = tfBuffer.lookupTransform(color->header.frame_id,
+                                    cloud->header.frame_id,
+                                    color->header.stamp);
+      ROS_DEBUG_THROTTLE(5, "Transform (t) from cloud -> color: [%f,%f,%f]",
+                         tf.transform.translation.x,
+                         tf.transform.translation.y,
+                         tf.transform.translation.z);
     } catch (tf2::TransformException& ex) {
       NODELET_WARN("TF exception: %s", ex.what());
       return;
