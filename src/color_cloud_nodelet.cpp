@@ -121,6 +121,11 @@ public:
                                 std::vector<cv::Point2i>& distortedPoints_)
   {
     cv::Point2i bogus(0,0);
+
+    // compute the new height and width of the undistorted image
+    //double new_width, new_height;
+    //estimate_resolution(camInfo, new_width, new_height);
+    
     distortedPoints_.resize(camInfo.height * camInfo.width);
     for (int v = 0; v < camInfo.height; v++) {
       for (int u = 0; u < camInfo.width; u++) {
@@ -171,12 +176,14 @@ public:
     if (!std::isfinite(p[0])) return false;
     ip[0] = ci_.K[0] * p[0] / p[2] + ci_.K[2];
     ip[1] = ci_.K[4] * p[1] / p[2] + ci_.K[5];
+    //return true;
     if (ip[0] >= 0 && ip[0] < ci_.width &&
         ip[1] >= 0 && ip[1] < ci_.height) return true;
     return false;      
   }
 
-  inline bool in_frustum(const cv::Point2d& ip)
+  template<typename T>
+  inline bool in_frustum(const T& ip)
   {
     if (ip.x >= 0 && ip.x < ci_.width &&
         ip.y >= 0 && ip.y < ci_.height) return true;
@@ -200,24 +207,32 @@ public:
       cv::Point2i ul, ur, ll, lr;
       double x = uv[0];
       double y = uv[1];
-      // interpolation of the point color
-      pul(ul, x, y);
-      pur(ur, x, y);
-      pll(ll, x, y);
-      plr(lr, x, y);
-      cv::Point2i& dul = distorted_points_[idx(ul)];
-      cv::Point2i& dur = distorted_points_[idx(ur)];
-      cv::Point2i& dll = distorted_points_[idx(ll)];
-      cv::Point2i& dlr = distorted_points_[idx(lr)];
-      float ulw = (lr.x - x)*(lr.y - y);
-      float urw = (ll.y - y)*(x - ll.x);
-      float llw = (y - ur.y)*(ur.x - x);
-      float lrw = (x - ul.x)*(y - ul.y);
+      int u = std::round(x);
+      int v = std::round(y);
+      cv::Point2i p(u,v);
+      cv::Point2i& dul = distorted_points_[idx(p)];
+      if (!in_frustum(dul)) return 0;
       cv::Vec3b vcolor =
-        img.at<cv::Vec3b>(dul)*ulw +
-        img.at<cv::Vec3b>(dur)*urw +
-        img.at<cv::Vec3b>(dll)*llw +
-        img.at<cv::Vec3b>(dlr)*lrw;
+        img.at<cv::Vec3b>(dul);
+      
+      // interpolation of the point color
+      // pul(ul, x, y);
+      // pur(ur, x, y);
+      // pll(ll, x, y);
+      // plr(lr, x, y);
+      // cv::Point2i& dul = distorted_points_[idx(ul)];
+      // cv::Point2i& dur = distorted_points_[idx(ur)];
+      // cv::Point2i& dll = distorted_points_[idx(ll)];
+      // cv::Point2i& dlr = distorted_points_[idx(lr)];
+      // float ulw = (lr.x - x)*(lr.y - y);
+      // float urw = (ll.y - y)*(x - ll.x);
+      // float llw = (y - ur.y)*(ur.x - x);
+      // float lrw = (x - ul.x)*(y - ul.y);
+      // cv::Vec3b vcolor =
+      //   img.at<cv::Vec3b>(dul)*ulw +
+      //   img.at<cv::Vec3b>(dur)*urw +
+      //   img.at<cv::Vec3b>(dll)*llw +
+      //   img.at<cv::Vec3b>(dlr)*lrw;
       uint32_t color =
         (vcolor[0] << 16) +
         (vcolor[1] << 8) +
@@ -316,6 +331,8 @@ public:
   
   void info_cb(const sensor_msgs::CameraInfo::ConstPtr& info)
   {
+    if (have_info_) return;
+    
     ci_ = *info;
     color_info_sub_.shutdown();
 
@@ -336,7 +353,6 @@ public:
       computeDistortMap(ci_, camera_model_, distorted_points_);
     }
     have_info_ = true;
-
   }
   
 private:

@@ -102,18 +102,6 @@
 
 #endif
 
-void computeUndistortMap(const sensor_msgs::CameraInfo::ConstPtr& camInfo,
-                         const image_geometry::PinholeCameraModel& cameraModel_,
-                         std::vector<cv::Point3d>& undistortedPoints_)
-{
-  undistortedPoints_.resize(camInfo->height * camInfo->width);
-  for (int v = 0; v < camInfo->height; v++) {
-    for (int u = 0; u < camInfo->width; u++) {
-      cv::Point2d uv_rect = cameraModel_.rectifyPoint(cv::Point2d(u,v));
-      undistortedPoints_[v * camInfo->width + u] = cameraModel_.projectPixelTo3dRay(uv_rect);
-    }
-  }  
-}
 
 
 
@@ -155,8 +143,85 @@ private:
   std::string cameraInfoPath;
   sensor_msgs::CameraInfo::Ptr externalCameraInfo;  
   std::vector<cv::Point3d> undistortedPoints_;
-  image_geometry::PinholeCameraModel cameraModel_;
+  std::vector<cv::Point2i> distortedPoints_;
+  image_geometry::PinholeCameraModel cameraModel_; // external intrinsics
+  image_geometry::PinholeCameraModel intCameraModel_; // internal intrinsics
 
+  void computeUndistortMap(const sensor_msgs::CameraInfo::ConstPtr& camInfo,
+                           const image_geometry::PinholeCameraModel& cameraModel_,
+                           std::vector<cv::Point3d>& undistortedPoints_)
+  {
+    undistortedPoints_.resize(camInfo->height * camInfo->width);
+    for (int v = 0; v < camInfo->height; v++) {
+      for (int u = 0; u < camInfo->width; u++) {
+        cv::Point2d uv_rect = cameraModel_.rectifyPoint(cv::Point2d(u,v));
+        cv::Point3d p = undistortedPoints_[v * camInfo->width + u] = cameraModel_.projectPixelTo3dRay(uv_rect);
+        double l = sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
+        undistortedPoints_[v * camInfo->width + u] = cv::Point3d(p.x/l, p.y/l, p.z/l);
+      }
+    }  
+  }
+  
+  // TODO: refactor to standalone function
+  void computeDistortMap(const sensor_msgs::CameraInfo& camInfo,
+                         const image_geometry::PinholeCameraModel& cameraModel_,
+                         std::vector<cv::Point2i>& distortedPoints_)
+  {
+    cv::Point2i bogus(-1,-1);
+    distortedPoints_.resize(camInfo.height * camInfo.width);
+    for (int v = 0; v < camInfo.height; v++) {
+      for (int u = 0; u < camInfo.width; u++) {
+        // raw <- rect
+        cv::Point2d uv_raw = cameraModel_.unrectifyPoint(cv::Point2d(u,v));
+        if (uv_raw.x < 0 || uv_raw.x >= (camInfo.width - 0.5) ||
+            uv_raw.y < 0 || uv_raw.y >= (camInfo.height - 0.5)) {
+          distortedPoints_[v * camInfo.width + u] = bogus;
+        } else {
+          cv::Point2i uvi((int)std::round(uv_raw.x),(int)std::round(uv_raw.y));
+          distortedPoints_[v * camInfo.width + u] = uvi;
+        }
+      }
+    }
+  }
+
+  void remapPoint(size_t i,
+                  const cv::Point3d& monstar_pt,
+                  cv::Point3d& new_pt) const
+  {
+    new_pt.x = std::numeric_limits<double>::quiet_NaN();
+    new_pt.y = std::numeric_limits<double>::quiet_NaN();
+    new_pt.z = std::numeric_limits<double>::quiet_NaN();
+
+    int W = externalCameraInfo->width;
+    int H = externalCameraInfo->height;
+    double X, Y, Z;
+    X = monstar_pt.x;
+    Y = monstar_pt.y;
+    Z = monstar_pt.z;
+    double u = X/Z*cameraInfo.K[0] + cameraInfo.K[2];
+    double v = Y/Z*cameraInfo.K[4] + cameraInfo.K[5];
+    int iu = (int)std::round(u);
+    int iv = (int)std::round(v);
+    int ei =  iv * W + iu;
+    // if (ei != i) {
+    //   OUT_DEBUG("remap points, ei " FG_YELLOW << ei << " i " << FG_RED << i);
+    // }
+    double range = sqrt(X*X + Y*Y + Z*Z); // sensed range
+    if (ei < 0 || ei >= (H*W)) return;
+    const cv::Point2d& uv_distort = distortedPoints_[ei];
+    if (uv_distort.x != -1) {
+      const cv::Point3d& uv_undistort = undistortedPoints_[uv_distort.y * W + uv_distort.x];
+      //cv::Point3d ray;
+      //cv::normalize(uv_undistort, ray);
+      new_pt = uv_undistort * range;
+      //double z = sqrt(range*range - uv_undistort.x*uv_undistort.x - uv_undistort.y*uv_undistort.y);
+      //new_pt.x = uv_undistort.x;
+      //new_pt.y = uv_undistort.y;
+      //new_pt.z = z;
+      //OUT_DEBUG("remap points, delta z: " FG_YELLOW << (z - Z));
+    } 
+  }
+  
 public:
   PicoFlexx(const ros::NodeHandle &nh = ros::NodeHandle(), const ros::NodeHandle &priv_nh = ros::NodeHandle("~"))
     : royale::IDepthDataListener(), royale::IExposureListener2(), nh(nh), priv_nh(priv_nh), server(lockServer)
@@ -558,28 +623,6 @@ private:
     priv_nh.param("override_camera_info", overrideCameraInfo, false);
     priv_nh.param("camera_info_path", cameraInfoPath, std::string(""));
 
-    if (overrideCameraInfo) {
-      externalCameraInfo.reset(new sensor_msgs::CameraInfo);
-      // load the camera info
-      load_info_from_yaml(cameraInfoPath, externalCameraInfo);
-      cameraModel_.fromCameraInfo(externalCameraInfo);
-      OUT_INFO(FG_RED <<   "Overriding onboard camera info using external parameters:" << std::endl <<
-               NO_COLOR << "             File: " << FG_CYAN << cameraInfoPath << std::endl <<
-               NO_COLOR << "               fx: " << FG_CYAN << externalCameraInfo->K[0] << std::endl <<
-               NO_COLOR << "               fy: " << FG_CYAN << externalCameraInfo->K[4] << std::endl <<
-               NO_COLOR << "               cx: " << FG_CYAN << externalCameraInfo->K[2] << std::endl <<
-               NO_COLOR << "               cy: " << FG_CYAN << externalCameraInfo->K[5] << std::endl <<
-               NO_COLOR << "             dist: " << FG_CYAN <<
-               externalCameraInfo->D[0] << ", " <<
-               externalCameraInfo->D[1] << ", " <<
-               externalCameraInfo->D[2] << ", " <<
-               externalCameraInfo->D[3] << ", " <<
-               externalCameraInfo->D[4] << std::endl <<
-               NO_COLOR << "  Computing cloud: " << FG_CYAN << "true" << NO_COLOR << std::endl);
-      // pre-process the cloud undistortion map
-      computeUndistortMap(externalCameraInfo, cameraModel_, undistortedPoints_);
-    }
-
     OUT_INFO("parameter:" << std::endl
              << "                 base_name: " FG_CYAN << baseName << NO_COLOR << std::endl
              << "                    sensor: " FG_CYAN << (sensor.empty() ? "default" : sensor) << NO_COLOR << std::endl
@@ -608,6 +651,30 @@ private:
       return false;
     }
 
+    if (overrideCameraInfo) {
+      externalCameraInfo.reset(new sensor_msgs::CameraInfo);
+      // load the camera info
+      load_info_from_yaml(cameraInfoPath, externalCameraInfo);
+      cameraModel_.fromCameraInfo(externalCameraInfo);
+      intCameraModel_.fromCameraInfo(cameraInfo);
+      OUT_INFO(FG_RED <<   "Overriding onboard camera info using external parameters:" << std::endl <<
+               NO_COLOR << "             File: " << FG_CYAN << cameraInfoPath << std::endl <<
+               NO_COLOR << "               fx: " << FG_CYAN << externalCameraInfo->K[0] << std::endl <<
+               NO_COLOR << "               fy: " << FG_CYAN << externalCameraInfo->K[4] << std::endl <<
+               NO_COLOR << "               cx: " << FG_CYAN << externalCameraInfo->K[2] << std::endl <<
+               NO_COLOR << "               cy: " << FG_CYAN << externalCameraInfo->K[5] << std::endl <<
+               NO_COLOR << "             dist: " << FG_CYAN <<
+               externalCameraInfo->D[0] << ", " <<
+               externalCameraInfo->D[1] << ", " <<
+               externalCameraInfo->D[2] << ", " <<
+               externalCameraInfo->D[3] << ", " <<
+               externalCameraInfo->D[4] << std::endl <<
+               NO_COLOR << "  Computing cloud: " << FG_CYAN << "true" << NO_COLOR << std::endl);
+      // pre-process the cloud undistortion map
+      computeUndistortMap(externalCameraInfo, cameraModel_, undistortedPoints_);
+      computeDistortMap(cameraInfo, intCameraModel_, distortedPoints_);
+    }
+    
     if(cameraDevice->registerExposureListener(this) != royale::CameraStatus::SUCCESS)
     {
       OUT_ERROR("could not register exposure listener!");
@@ -1137,7 +1204,12 @@ private:
 
     if (overrideCameraInfo) {
       auto func = [&](size_t i, const royale::DepthPoint* itI, float itD, cv::Point3d& p) {
-        p = undistortedPoints_[i] * itD;
+        //p = undistortedPoints_[i] * itD;
+        cv::Point3d mpt;
+        mpt.x = itI->x;
+        mpt.y = itI->y;
+        mpt.z = itI->z;
+        remapPoint(i, mpt, p);
       };
       computeCloud(data, msgCloud, func, msgMono16, msgDepth, msgNoise);
     } else {
@@ -1215,9 +1287,15 @@ private:
         *itCX = pt.x;
         *itCY = pt.y;
         *itCZ = pt.z;
-        *itCN = itI->noise;
-        *itD = itI->z;
-        *itN = itI->noise;
+        if (std::isfinite(pt.x)) {
+          *itCN = itI->noise;
+          *itD = pt.z;
+          *itN = itI->noise;
+        } else {
+          *itCN = 0.0f;
+          *itD = 0.0f;
+          *itN = 0.0f;          
+        }
       } else {
         *itCX = invalid;
         *itCY = invalid;
