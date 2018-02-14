@@ -141,7 +141,11 @@ private:
   std::thread threadProcess;
   bool overrideCameraInfo;
   std::string cameraInfoPath;
-  sensor_msgs::CameraInfo::Ptr externalCameraInfo;  
+  sensor_msgs::CameraInfo::Ptr externalCameraInfo;
+  // let's increase the mapping plane
+  int sBuffer;
+  int sWidth, sHeight;
+  double sCx, sCy;
   std::vector<cv::Point3d> undistortedPoints_;
   std::vector<cv::Point2i> distortedPoints_;
   image_geometry::PinholeCameraModel cameraModel_; // external intrinsics
@@ -192,8 +196,9 @@ private:
     new_pt.y = std::numeric_limits<double>::quiet_NaN();
     new_pt.z = std::numeric_limits<double>::quiet_NaN();
 
-    int W = externalCameraInfo->width;
-    int H = externalCameraInfo->height;
+    int W = cameraInfo.width;
+    int H = cameraInfo.height;
+    int eW = externalCameraInfo->width;
     double X, Y, Z;
     X = monstar_pt.x;
     Y = monstar_pt.y;
@@ -210,7 +215,7 @@ private:
     if (ei < 0 || ei >= (H*W)) return;
     const cv::Point2d& uv_distort = distortedPoints_[ei];
     if (uv_distort.x != -1) {
-      const cv::Point3d& uv_undistort = undistortedPoints_[uv_distort.y * W + uv_distort.x];
+      const cv::Point3d& uv_undistort = undistortedPoints_[uv_distort.y * eW + uv_distort.x];
       //cv::Point3d ray;
       //cv::normalize(uv_undistort, ray);
       new_pt = uv_undistort * range;
@@ -267,6 +272,7 @@ public:
     configMax.max_abs_noise = 1.0;
     configMax.max_rel_noise = 10;
     configMax.range_factor = 7.0;
+
   }
 
   ~PicoFlexx()
@@ -621,8 +627,15 @@ private:
     priv_nh.param("queue_size", queueSize, 2);
     priv_nh.param("base_name_tf", baseNameTF, baseName);
     priv_nh.param("override_camera_info", overrideCameraInfo, false);
-    priv_nh.param("camera_info_path", cameraInfoPath, std::string(""));
+    priv_nh.param("camera_info_path", cameraInfoPath, std::string(""));    
+    priv_nh.param("image_plane_buffer", sBuffer, 40);
 
+    if (overrideCameraInfo) {
+      sBuffer = 40;
+    } else {
+      sBuffer = 0;
+    }
+    
     OUT_INFO("parameter:" << std::endl
              << "                 base_name: " FG_CYAN << baseName << NO_COLOR << std::endl
              << "                    sensor: " FG_CYAN << (sensor.empty() ? "default" : sensor) << NO_COLOR << std::endl
@@ -655,7 +668,6 @@ private:
       externalCameraInfo.reset(new sensor_msgs::CameraInfo);
       // load the camera info
       load_info_from_yaml(cameraInfoPath, externalCameraInfo);
-      cameraModel_.fromCameraInfo(externalCameraInfo);
       intCameraModel_.fromCameraInfo(cameraInfo);
       OUT_INFO(FG_RED <<   "Overriding onboard camera info using external parameters:" << std::endl <<
                NO_COLOR << "             File: " << FG_CYAN << cameraInfoPath << std::endl <<
@@ -671,6 +683,15 @@ private:
                externalCameraInfo->D[4] << std::endl <<
                NO_COLOR << "  Computing cloud: " << FG_CYAN << "true" << NO_COLOR << std::endl);
       // pre-process the cloud undistortion map
+      sWidth = externalCameraInfo->width + sBuffer;
+      sHeight = externalCameraInfo->height + sBuffer;
+      sCx = externalCameraInfo->K[2] + sBuffer/2.0;
+      sCy = externalCameraInfo->K[5] + sBuffer/2.0;
+      externalCameraInfo->width = sWidth;
+      externalCameraInfo->height = sHeight;
+      externalCameraInfo->K[2] = sCx;
+      externalCameraInfo->K[5] = sCy;
+      cameraModel_.fromCameraInfo(externalCameraInfo);
       computeUndistortMap(externalCameraInfo, cameraModel_, undistortedPoints_);
       computeDistortMap(cameraInfo, intCameraModel_, distortedPoints_);
     }
@@ -1041,18 +1062,20 @@ private:
 
     uint16_t maxSensorHeight;
     cameraDevice->getMaxSensorHeight(maxSensorHeight);
-    cameraInfo.height = maxSensorHeight;
+    cameraInfo.height = maxSensorHeight + sBuffer;
 
     uint16_t maxSensorWidth;
     cameraDevice->getMaxSensorWidth(maxSensorWidth);
-    cameraInfo.width = maxSensorWidth;
+    cameraInfo.width = maxSensorWidth + sBuffer;
 
+    double sOff = sBuffer / 2.0;
+    
     cameraInfo.K[0] = params.focalLength.first;
     cameraInfo.K[1] = 0;
-    cameraInfo.K[2] = params.principalPoint.first;
+    cameraInfo.K[2] = params.principalPoint.first + sOff;
     cameraInfo.K[3] = 0;
     cameraInfo.K[4] = params.focalLength.second;
-    cameraInfo.K[5] = params.principalPoint.second;
+    cameraInfo.K[5] = params.principalPoint.second + sOff;
     cameraInfo.K[6] = 0;
     cameraInfo.K[7] = 0;
     cameraInfo.K[8] = 1;
@@ -1069,11 +1092,11 @@ private:
 
     cameraInfo.P[0] = params.focalLength.first;
     cameraInfo.P[1] = 0;
-    cameraInfo.P[2] = params.principalPoint.first;
+    cameraInfo.P[2] = params.principalPoint.first + sOff;
     cameraInfo.P[3] = 0;
     cameraInfo.P[4] = 0;
     cameraInfo.P[5] = params.focalLength.second;
-    cameraInfo.P[6] = params.principalPoint.second;
+    cameraInfo.P[6] = params.principalPoint.second + sOff;
     cameraInfo.P[7] = 0;
     cameraInfo.P[8] = 0;
     cameraInfo.P[9] = 0;
