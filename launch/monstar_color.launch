@@ -39,11 +39,14 @@
   <arg name="camera_info_path" default=""/>
 
   <arg name="colorize"         default="true"/>
+  <arg name="rgbd"             default="true"/>
   <arg name="color_image_topic" default="color_image"/>
   <arg name="color_info_topic" default="color_camera_info"/>
+  <arg name="color_frame_id" default="INVALID"/>
+  <arg name="image_plane_buffer" default="400"/>
 
   <arg name="debug" default="false"/>
-  <arg name="launch_args"     if="$(arg debug)" default="xterm -e gdb -ex run --args"/>
+  <arg name="launch_args"     if="$(arg debug)" default="xterm -e gdb --args"/>
   <arg name="launch_args" unless="$(arg debug)" default=""/>
   
   <!-- Default machine definition. -->
@@ -76,10 +79,22 @@
           args="load pico_flexx_driver/color_cloud_nodelet $(arg nodelet_manager)"
           respawn="true"  if="$(arg colorize)">
       <param name="queue_size" value="20"/>
+      <param name="image_plane_buffer" value="$(arg image_plane_buffer)"/>
       <remap from="cloud" to="$(arg base_name)/points_no_color"/>
       <remap from="image" to="$(arg color_image_topic)"/>
       <remap from="camera_info" to="$(arg color_info_topic)"/>
-      <remap from="color_cloud" to="$(arg base_name)/points"/>
+      <remap from="color_cloud" to="$(arg base_name)/points"/>      
+    </node>
+    <node pkg="nodelet" type="nodelet" name="$(arg base_name)_rgbd" output="screen"
+          args="standalone pico_flexx_driver/rgbd_nodelet"
+          respawn="true"  if="$(arg rgbd)" launch-prefix="$(arg launch_args)">
+      <param name="queue_size" value="20"/>
+      <param name="image_plane_buffer" value="$(arg image_plane_buffer)"/>
+      <param name="frame_id" value="$(arg color_frame_id)"/>
+      <remap from="colored_cloud" to="$(arg base_name)/points"/>
+      <remap from="camera_info" to="$(arg base_name)/camera_info"/>
+      <remap from="rgb" to="$(arg base_name)/rgbd/image_color"/>
+      <remap from="depth" to="$(arg base_name)/rgbd/image_depth"/>
     </node>
     <node pkg="nodelet" type="nodelet" name="$(arg base_name)_image_proc" output="screen"
           args="load image_proc/rectify $(arg nodelet_manager)"

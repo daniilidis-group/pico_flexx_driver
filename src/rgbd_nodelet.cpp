@@ -29,12 +29,25 @@
 #include <tf2_eigen/tf2_eigen.h>
 #include <tf2_ros/transform_listener.h>
 #include <cv_bridge/cv_bridge.h>
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+
+typedef union
+{
+  float f;
+  struct {
+    uint8_t b;
+    uint8_t g;
+    uint8_t r;
+    uint8_t a;
+  };
+} FColor;
 
 class RGBDNodelet : public nodelet::Nodelet
 {
 public:
   RGBDNodelet()
-    : tfListener(tfBuffer)
+    : tfListener(tfBuffer), have_info_(false)
   {
   }
 
@@ -45,8 +58,8 @@ public:
   virtual
   void onInit()
   {
-    nh_ = getMTNodeHandle();
-    ros::NodeHandle cfg = getMTPrivateNodeHandle();
+    nh_ = getNodeHandle();
+    ros::NodeHandle cfg = getPrivateNodeHandle();
     // if image_width/height is > 0, then use it to generate a different size synthetic image
     cfg.param("image_height", height_, 0);
     cfg.param("image_width", width_, 0);
@@ -61,7 +74,6 @@ public:
     depth_pub_ = nh_.advertise<sensor_msgs::Image>("depth", 1);
   }
 
-  inline
   bool project(const Eigen::Vector3d& wp, Eigen::Vector2d& ip)
   {
     // project point to color image plane
@@ -85,6 +97,7 @@ public:
   void cloud_cb(const sensor_msgs::PointCloud2::ConstPtr& cloud)
   {
     if (!have_info_) return;
+    NODELET_DEBUG("rgbd cloud cb");
 
     // lookup the transform
     geometry_msgs::TransformStamped tf;
@@ -103,11 +116,12 @@ public:
     Eigen::Affine3d T;
     T = tf2::transformToEigen(tf);
 
-    cv::Mat rgb = cv::Mat::zeros(ci_.height, ci_.width, CV_8UC3);
-    cv::Mat depth = cv::Mat::zeros(ci_.height, ci_.width, CV_16U);
+    rgb = cv::Mat::zeros(ci_.height, ci_.width, CV_8UC3);
+    depth = cv::Mat::zeros(ci_.height, ci_.width, CV_16U);
     
     uint32_t rgb_offset = cloud->fields[6].offset;
     size_t N = cloud->width * cloud->height;
+    NODELET_DEBUG("N: %lu, %d", N, rgb_offset);
     for (size_t i = 0; i < N; ++i) {
       const float* itC = reinterpret_cast<const float*>(&cloud->data[i * cloud->point_step]);
       Eigen::Vector3d pt(*(itC), *(itC+1), *(itC+2));
@@ -116,22 +130,25 @@ public:
       uint16_t D = (uint16_t)floor(tpt[2] * 1000.0);
       Eigen::Vector2d ip;
       if (project(tpt, ip)) {
-        int u = (int)std::round(ip[0]);
-        int v = (int)std::round(ip[1]);
+        int u = (int)std::round(ip[0]-0.5);
+        int v = (int)std::round(ip[1]-0.5);
         //int i = idx(u,v);
-        if (depth.at<uint16_t>(v,u) < D) continue;
+        if (depth.at<uint16_t>(v,u) > 0 && depth.at<uint16_t>(v,u) < D) continue;
         // set depth
         depth.at<uint16_t>(v,u) = D;
-        uint32_t color = *reinterpret_cast<const uint32_t*>(&cloud->data[i * cloud->point_step] + rgb_offset);
-        uint8_t r,g,b;
-        r = (color >> 16) && 0xFF;
-        g = (color >> 8) && 0xFF;
-        b = color && 0xFF;
+        FColor color;
+        color.f = *reinterpret_cast<const float*>(&cloud->data[i * cloud->point_step] + rgb_offset);
         // set color
-        rgb.at<cv::Vec3b>(v,u) = cv::Vec3b(b,g,r);
+        rgb.at<cv::Vec3b>(v,u) = cv::Vec3b(color.b, color.g, color.r);
       }
     }
 
+    // cv::namedWindow("rgb");
+    // cv::namedWindow("depth");
+    // cv::imshow("rgb", rgb);
+    // cv::imshow("depth", depth);
+    // cv::waitKey(50);
+    
     // publish the images
     std_msgs::Header hdr = cloud->header;
     hdr.frame_id = frame_id_;
@@ -151,7 +168,6 @@ public:
 
   void info_cb(const sensor_msgs::CameraInfo::ConstPtr& info)
   {
-    have_info_ = true;    
     ci_ = *info;
 
     // change the size of the image
@@ -170,6 +186,12 @@ public:
     ci_.P[6] = ci_.K[5];
     ci_.P[0] = ci_.K[0];
     ci_.P[5] = ci_.K[4];
+
+    NODELET_DEBUG("Info: %dx%d, %f %f %f %f", ci_.width, ci_.height,
+                  ci_.K[0], ci_.K[4], ci_.K[2], ci_.K[5]);
+
+    info_sub_.shutdown();
+    have_info_ = true;    
   }
 
 private:
@@ -186,4 +208,9 @@ private:
   int width_;
   int height_;
   std::string frame_id_;
+
+  cv::Mat rgb, depth;
 };
+
+#include <pluginlib/class_list_macros.h>
+PLUGINLIB_EXPORT_CLASS(RGBDNodelet, nodelet::Nodelet)

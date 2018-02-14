@@ -122,6 +122,14 @@ target_link_libraries(color_cloud_nodelet
 add_dependencies(color_cloud_nodelet ${PROJECT_NAME}_gencfg)
 target_compile_options(color_cloud_nodelet PUBLIC ${cxx_flags})
 
+add_library(rgbd_nodelet SHARED
+  src/rgbd_nodelet.cpp)
+target_link_libraries(rgbd_nodelet
+  ${catkin_LIBRARIES}
+  ${royale_LIBRARIES}
+  ${OpenCV_LIBRARIES} yaml-cpp)
+add_dependencies(rgbd_nodelet ${PROJECT_NAME}_gencfg)
+target_compile_options(rgbd_nodelet PUBLIC ${cxx_flags})
 
 add_executable(pico_flexx_driver src/pico_flexx_driver.cpp)
 target_link_libraries(pico_flexx_driver

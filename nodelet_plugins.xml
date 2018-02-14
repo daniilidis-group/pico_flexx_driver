@@ -9,3 +9,9 @@
     <description>ColorCloud nodelet</description>
   </class>
 </library>
+
+<library path="lib/librgbd_nodelet">
+  <class name="pico_flexx_driver/rgbd_nodelet" type="RGBDNodelet" base_class_type="nodelet::Nodelet">
+    <description>Simulated RGB-D nodelet</description>
+  </class>
+</library>
