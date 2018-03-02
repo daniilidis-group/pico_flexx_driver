@@ -48,6 +48,7 @@
 #include <cv_bridge/cv_bridge.h>
 
 #include <opencv2/calib3d/calib3d.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/highgui/highgui.hpp>
 
 const int kFocalLengthEstimationAttempts = 100;
@@ -81,7 +82,6 @@ public:
     ros::NodeHandle cfg = getMTPrivateNodeHandle();
 
     cfg.param("queue_size", queue_size_, 10);
-    cfg.param("image_plane_buffer", buffer_, 300);
 
     // subscribe to the color image camera info
     have_info_ = false;
@@ -99,63 +99,59 @@ public:
 
   }
   
-  void computeDistortMap(const sensor_msgs::CameraInfo& camInfo,
-                         const image_geometry::PinholeCameraModel& cameraModel_,
-                         std::vector<cv::Point2i>& distortedPoints_)
+  void computeDistortMap(std::vector<cv::Point2f>& distortedPoints_)
   {
-    cv::Point2i bogus(0,0);
-    distortedPoints_.resize(camInfo.height * camInfo.width);
-    for (int v = 0; v < camInfo.height; v++) {
-      for (int u = 0; u < camInfo.width; u++) {
+    cv::Point2f bogus(-1,-1);
+    distortedPoints_.resize(eci_.height * eci_.width);
+    for (int v = 0; v < eci_.height; v++) {
+      for (int u = 0; u < eci_.width; u++) {
         // raw <- rect
-        cv::Point2d uv_raw = cameraModel_.unrectifyPoint(cv::Point2d(u,v));
-        if (uv_raw.x < 0 || uv_raw.x >= (camInfo.width - 0.5) ||
-            uv_raw.y < 0 || uv_raw.y >= (camInfo.height - 0.5)) {
-          distortedPoints_[v * camInfo.width + u] = bogus;
+        cv::Point2f uv_raw = camera_model_.unrectifyPoint(cv::Point2f(u,v));
+        if (uv_raw.x < 0 || uv_raw.x >= (ci_.width - 1) ||
+            uv_raw.y < 0 || uv_raw.y >= (ci_.height - 1)) {
+          distortedPoints_[v * eci_.width + u] = bogus;
         } else {
-          cv::Point2i uvi((int)std::round(uv_raw.x),(int)std::round(uv_raw.y));
-          distortedPoints_[v * camInfo.width + u] = uvi;
+          distortedPoints_[v * eci_.width + u] = uv_raw;
         }
       }
     }  
   }
-  
-  void computeDistortMapFisheye(const sensor_msgs::CameraInfo& camInfo,
-                                std::vector<cv::Point2i>& distortedPoints_)
-  {
-    cv::Point2i bogus(-1,-1);
 
-    distortedPoints_.resize(eci_.height * eci_.width);
-    cv::Mat K = cv::Mat::zeros(3,3,CV_32F);
-    K.at<float>(0,0) = ci_.K[0];
-    K.at<float>(1,1) = ci_.K[4];
-    K.at<float>(0,2) = ci_.K[2]; // original cx, cy
-    K.at<float>(1,2) = ci_.K[5];
-    K.at<float>(2,2) = 1.f;
+  void undistortPoint(const cv::Point2f& dp, cv::Point2f& p)
+  {    
+    std::vector<cv::Point2f> out(1);
+    if (is_fisheye) {
+      cv::fisheye::undistortPoints(std::vector<cv::Point2f>(1,dp), out, K_, ci_.D);
+    } else {
+      cv::undistortPoints(std::vector<cv::Point2f>(1,dp), out, K_, ci_.D);
+    }
+    p = out[0];
+  }
+  
+  void computeDistortMapFisheye(std::vector<cv::Point2f>& distortedPoints_)
+  {
+    cv::Point2f bogus(-1,-1);
+
+    distortedPoints_.resize(eci_.height * eci_.width); // make room for the distortion map
 
     for (int v = 0; v < eci_.height; v++) {
       for (int u = 0; u < eci_.width; u++) {
         // raw <- rect
         double uu = (u - eci_.K[2])/eci_.K[0];
-        double vv = (v - eci_.K[5])/eci_.K[4];        
+        double vv = (v - eci_.K[5])/eci_.K[4];
         cv::Point2f p(uu,vv);
         std::vector<cv::Point2f> out(1);
-        cv::fisheye::distortPoints(std::vector<cv::Point2f>(1,p), out, K, eci_.D);
-        cv::Point2d uv_raw(out[0].x,out[0].y);
-        if (uv_raw.x < 0 || uv_raw.x >= (ci_.width - 0.5) ||
-            uv_raw.y < 0 || uv_raw.y >= (ci_.height - 0.5)) {
+        cv::fisheye::distortPoints(std::vector<cv::Point2f>(1,p), out, K_, eci_.D);
+        cv::Point2f uv_raw(out[0].x,out[0].y);
+        if (uv_raw.x < 0 || uv_raw.x >= (ci_.width - 1) ||
+            uv_raw.y < 0 || uv_raw.y >= (ci_.height - 1)) {
           distortedPoints_[v * eci_.width + u] = bogus;
         } else {
-          cv::Point2i uvi((int)std::round(uv_raw.x),(int)std::round(uv_raw.y));
-          distortedPoints_[v * eci_.width + u] = uvi;
-          // rect.at<cv::Vec3b>(v,u) = cv::Vec3b(127 + (uint8_t)((u - uv_raw.x)/halfw * 128),
-          //                                     0,
-          //                                     127 + (uint8_t)((v - uv_raw.y)/halfh * 128));
+          distortedPoints_[v * eci_.width + u] = uv_raw;
         }
       }
     }
   }
-
   
   // Point, upper left
   inline void pul(cv::Point2i& p, double u, double v)
@@ -210,6 +206,30 @@ public:
     else
       return 0;
   }
+
+  // compute the (interpolated) distorted uv coords for the
+  // (undistorted) projected uv point
+  inline void distort(const cv::Point2f& uv, cv::Point2f& duv)
+  {
+    cv::Point2i ul, ur, ll, lr;
+    double x = uv.x;
+    double y = uv.y;
+    // interpolation of the point color
+    pul(ul, x, y);
+    pur(ur, x, y);
+    pll(ll, x, y);
+    plr(lr, x, y);
+    cv::Point2f& dul = distorted_points_[idx(ul)];
+    cv::Point2f& dur = distorted_points_[idx(ur)];
+    cv::Point2f& dll = distorted_points_[idx(ll)];
+    cv::Point2f& dlr = distorted_points_[idx(lr)];
+    float ulw = (lr.x - x)*(lr.y - y);
+    float urw = (ll.y - y)*(x - ll.x);
+    float llw = (y - ur.y)*(ur.x - x);
+    float lrw = (x - ul.x)*(y - ul.y);
+
+    duv = dul * ulw + dur * urw + dll * llw + dlr * lrw;    
+  }
   
   inline float get_color(const Eigen::Vector3d& pt,
                          const Eigen::Affine3d& T,
@@ -219,30 +239,28 @@ public:
     Eigen::Vector2d uv;
     if (project(tpt, uv)) {
       cv::Point2i ul, ur, ll, lr;
-      double x = uv[0];
-      double y = uv[1];
+      cv::Point2f uvf(uv[0],uv[1]), duv;
+      distort(uvf, duv); // interpolate the distorted coords
+      double x = duv.x;
+      double y = duv.y;
       // interpolation of the point color
       pul(ul, x, y);
       pur(ur, x, y);
       pll(ll, x, y);
       plr(lr, x, y);
-      cv::Point2i& dul = distorted_points_[idx(ul)];
-      cv::Point2i& dur = distorted_points_[idx(ur)];
-      cv::Point2i& dll = distorted_points_[idx(ll)];
-      cv::Point2i& dlr = distorted_points_[idx(lr)];
-      if (in_frustum(dul) &&
-          in_frustum(dur) &&
-          in_frustum(dll) &&
-          in_frustum(dlr)) {
+      if (in_frustum(ul) &&
+          in_frustum(ur) &&
+          in_frustum(ll) &&
+          in_frustum(lr)) {
         float ulw = (lr.x - x)*(lr.y - y);
         float urw = (ll.y - y)*(x - ll.x);
         float llw = (y - ur.y)*(ur.x - x);
         float lrw = (x - ul.x)*(y - ul.y);
         cv::Vec3b vcolor =
-          img.at<cv::Vec3b>(dul)*ulw +
-          img.at<cv::Vec3b>(dur)*urw +
-          img.at<cv::Vec3b>(dll)*llw +
-          img.at<cv::Vec3b>(dlr)*lrw;
+          img.at<cv::Vec3b>(ul)*ulw +
+          img.at<cv::Vec3b>(ur)*urw +
+          img.at<cv::Vec3b>(ll)*llw +
+          img.at<cv::Vec3b>(lr)*lrw;
         uint32_t color =
           (vcolor[0] << 16) +
           (vcolor[1] << 8) +
@@ -250,7 +268,8 @@ public:
         return *reinterpret_cast<float*>(&color);
       }
     }
-    return 0; // return black for pixels outside the camera frustum
+    uint32_t color = (255 << 24);
+    return *reinterpret_cast<float*>(&color); // return black with alpha=1 for pixels outside the camera frustum
   }
   
   void process(const sensor_msgs::Image::ConstPtr& color,
@@ -348,21 +367,47 @@ public:
     eci_ = *info;
     color_info_sub_.shutdown(); 
 
-    eci_.width = ci_.width + buffer_;
-    eci_.height = ci_.height + buffer_/2;
-    offset_ = buffer_ / 2.0;
-    eci_.K[2] = eci_.width / 2.0;
-    eci_.K[5] = eci_.height / 2.0;
+    is_fisheye = ci_.distortion_model == "equidistant";
+    if (!is_fisheye) camera_model_.fromCameraInfo(ci_);        
+    
+    K_ = cv::Mat::zeros(3,3,CV_32F);
+    K_.at<float>(0,0) = ci_.K[0];
+    K_.at<float>(1,1) = ci_.K[4];
+    K_.at<float>(0,2) = ci_.K[2]; 
+    K_.at<float>(1,2) = ci_.K[5];
+    K_.at<float>(2,2) = 1.f;
+    
+    // find the optimal size of the "extended" camera info and undistortion buffer
+    cv::Point2f dul(0,0);
+    cv::Point2f dur(ci_.width,0);
+    cv::Point2f dlr(ci_.width,ci_.height);
+    cv::Point2f dll(0,ci_.height);
+    cv::Point2f ul, ur, lr, ll;
+    undistortPoint(dul, ul);
+    undistortPoint(dur, ur);
+    undistortPoint(dlr, lr);
+    undistortPoint(dll, ll);
+    float minx = std::min(ul.x,std::min(ur.x,std::min(lr.x,ll.x)));
+    float maxx = std::max(ul.x,std::max(ur.x,std::max(lr.x,ll.x)));
+    float miny = std::min(ul.y,std::min(ur.y,std::min(lr.y,ll.y)));
+    float maxy = std::max(ul.y,std::max(ur.y,std::max(lr.y,ll.y)));
+
+    int width = std::max(-minx,maxx) * 2 * ci_.K[0];
+    int height = std::max(-miny,maxy) * 2 * ci_.K[4];
+    
+    ROS_DEBUG("Optimal image: %f,%f / %f,%f", minx,miny,maxx,maxy);
+    ROS_DEBUG("New image dims: %d x %d", width, height);
+    eci_.width = width;
+    eci_.height = height;
+    eci_.K[2] = width / 2.0;
+    eci_.K[5] = height / 2.0;
+    
     ROS_DEBUG("extended image: %d x %d", eci_.width, eci_.height);
 
-    raw = cv::Mat::zeros(ci_.height, ci_.width, CV_8UC3);
-    rect = cv::Mat::zeros(eci_.height, eci_.width, CV_8UC3);
-    
-    if (ci_.distortion_model == "equidistant") {
-      computeDistortMapFisheye(ci_, distorted_points_);
+    if (is_fisheye) {
+      computeDistortMapFisheye(distorted_points_);
     } else {
-      camera_model_.fromCameraInfo(ci_);
-      computeDistortMap(ci_, camera_model_, distorted_points_);
+      computeDistortMap(distorted_points_);
     }
     have_info_ = true;
   }
@@ -382,6 +427,7 @@ private:
   bool have_info_;
   sensor_msgs::CameraInfo ci_;
   sensor_msgs::CameraInfo eci_;
+  cv::Mat K_;
   image_geometry::PinholeCameraModel camera_model_;
   double cx_, cy_;
   int width_, height_;
@@ -389,9 +435,8 @@ private:
   tf2_ros::Buffer tfBuffer;
   tf2_ros::TransformListener tfListener;
   // pre-compute the distortion map
-  std::vector<cv::Point2i> distorted_points_;
-  cv::Mat raw;
-  cv::Mat rect;
+  bool is_fisheye;
+  std::vector<cv::Point2f> distorted_points_;
 };
 
 #include <pluginlib/class_list_macros.h>

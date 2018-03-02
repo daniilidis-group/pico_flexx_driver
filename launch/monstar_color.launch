@@ -46,7 +46,7 @@
   <arg name="image_plane_buffer" default="400"/>
 
   <arg name="debug" default="false"/>
-  <arg name="launch_args"     if="$(arg debug)" default="xterm -e gdb --args"/>
+  <arg name="launch_args"     if="$(arg debug)" default="xterm -e gdb -ex run --args"/>
   <arg name="launch_args" unless="$(arg debug)" default=""/>
   
   <!-- Default machine definition. -->

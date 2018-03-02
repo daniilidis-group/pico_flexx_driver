@@ -83,8 +83,11 @@ public:
     }
     ip[0] = ci_.K[0] * wp[0] / wp[2] + ci_.K[2];
     ip[1] = ci_.K[4] * wp[1] / wp[2] + ci_.K[5];
-    if (ip[0] >= 0 && ip[0] < ci_.width &&
-        ip[1] >= 0 && ip[1] < ci_.height) return true;
+    double ru, rv;
+    ru = std::round(ip[0]);
+    rv = std::round(ip[1]);
+    if (ru >= 0 && ru < ci_.width &&
+        rv >= 0 && rv < ci_.height) return true;
     return false;
   }
 
@@ -130,8 +133,8 @@ public:
       uint16_t D = (uint16_t)floor(tpt[2] * 1000.0);
       Eigen::Vector2d ip;
       if (project(tpt, ip)) {
-        int u = (int)std::round(ip[0]-0.5);
-        int v = (int)std::round(ip[1]-0.5);
+        int u = (int)std::round(ip[0]);
+        int v = (int)std::round(ip[1]);
         //int i = idx(u,v);
         if (depth.at<uint16_t>(v,u) > 0 && depth.at<uint16_t>(v,u) < D) continue;
         // set depth
