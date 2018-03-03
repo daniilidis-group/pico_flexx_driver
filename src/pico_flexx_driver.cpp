@@ -110,7 +110,9 @@ void computeUndistortMap(const sensor_msgs::CameraInfo::ConstPtr& camInfo,
   for (int v = 0; v < camInfo->height; v++) {
     for (int u = 0; u < camInfo->width; u++) {
       cv::Point2d uv_rect = cameraModel_.rectifyPoint(cv::Point2d(u,v));
-      undistortedPoints_[v * camInfo->width + u] = cameraModel_.projectPixelTo3dRay(uv_rect);
+      cv::Point3d p = cameraModel_.projectPixelTo3dRay(uv_rect);
+      double plen = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+      undistortedPoints_[v * camInfo->width + u] = p / plen;
     }
   }  
 }
@@ -1137,7 +1139,8 @@ private:
 
     if (overrideCameraInfo) {
       auto func = [&](size_t i, const royale::DepthPoint* itI, float itD, cv::Point3d& p) {
-        p = undistortedPoints_[i] * itD;
+        double R = std::sqrt(itI->x * itI->x + itI->y * itI->y + itI->z * itI->z);
+        p = undistortedPoints_[i] * R;
       };
       computeCloud(data, msgCloud, func, msgMono16, msgDepth, msgNoise);
     } else {
